@@ -1,20 +1,20 @@
-//@name risu_macgyver
-//@display-name 리스 맥가이버 v0.1.10
+//@name risu_sidekick
+//@display-name 리스 사이드킥 v0.2.0
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.1.10
-//@changes GitHub update-url 추가, 첫 메시지 선택 삭제 재스캔 선택 보존
-//@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-macgyver/main/risu-macgyver.js
+//@version 0.2.0
+//@changes 리스 사이드킥으로 이름 변경, 잠든 봇 정리에 에셋 포함 총 용량 표시
+//@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/main/risu-sidekick.js
 
 (async () => {
   const R = globalThis.risuai || globalThis.Risuai;
   if (!R) {
-    console.error("[Risu MacGyver] RisuAI plugin API was not found.");
+    console.error("[Risu Sidekick] RisuAI plugin API was not found.");
     return;
   }
 
-  const PLUGIN_VERSION = "0.1.10";
-  const SNAPSHOT_PREFIX = "risu_macgyver_snapshot_";
+  const PLUGIN_VERSION = "0.2.0";
+  const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
   const MS_DAY = 24 * 60 * 60 * 1000;
   const OLD_3M = 90 * MS_DAY;
@@ -212,7 +212,7 @@
         <aside class="rm-sidebar">
           <div class="brand">
             <div>
-              <h1>리스 맥가이버</h1>
+              <h1>리스 사이드킥</h1>
               <p>잔손 많이 가는 Risu 정리함</p>
             </div>
             <button class="icon-close" data-action="close" aria-label="닫기">×</button>
@@ -425,6 +425,7 @@
       if (key === "category") value = normalizeForSort(categoryLabel(a.category)).localeCompare(normalizeForSort(categoryLabel(b.category)), "ko-KR");
       if (key === "lastTime") value = (a.lastTime || 0) - (b.lastTime || 0);
       if (key === "userMessages") value = a.userMessages - b.userMessages;
+      if (key === "size") value = a.size - b.size;
       return dir === "asc" ? value : -value;
     });
     return rows;
@@ -432,6 +433,7 @@
 
   function renderDormant() {
     const rows = sortedDormantRows();
+    const totalSize = rows.reduce((sum, row) => sum + row.size, 0);
     return `
       <div class="toolbar">
         <button data-action="scan-dormant">스캔</button>
@@ -444,9 +446,9 @@
           ${filterOption("unknown", "날짜 불명")}
         </select>
         <button data-action="trash-dormant" class="danger">선택 휴지통</button>
-        <span>${rows.length}개 표시</span>
+        <span>${rows.length}개 표시, ${formatBytes(totalSize)}</span>
       </div>
-      <p class="hint">영구 삭제가 아니라 RisuAI의 휴지통 표시인 <code>trashTime</code>을 설정합니다.</p>
+      <p class="hint">용량은 봇 데이터와 봇카드/추가 에셋 파일을 합산한 추정값입니다. 영구 삭제가 아니라 RisuAI의 휴지통 표시인 <code>trashTime</code>을 설정합니다.</p>
       <div class="desktop-table">
         <table>
           <thead>
@@ -457,9 +459,10 @@
               <th>${renderSortHead("마지막 대화", "lastTime", "dormant")}</th>
               <th>최근 열람/갱신 추정</th>
               <th>${renderSortHead("사용자 메시지", "userMessages", "dormant")}</th>
+              <th>${renderSortHead("용량", "size", "dormant")}</th>
             </tr>
           </thead>
-          <tbody>${rows.map(renderDormantRow).join("") || `<tr><td colspan="6" class="empty">스캔 결과가 없습니다.</td></tr>`}</tbody>
+          <tbody>${rows.map(renderDormantRow).join("") || `<tr><td colspan="7" class="empty">스캔 결과가 없습니다.</td></tr>`}</tbody>
         </table>
       </div>
       <div class="mobile-list">${rows.map(renderDormantMobile).join("") || `<div class="empty-card">스캔 결과가 없습니다.</div>`}</div>
@@ -476,6 +479,7 @@
         <td>${formatDate(row.lastTime)}</td>
         <td>${formatDate(row.lastInteraction)}</td>
         <td>${row.userMessages}</td>
+        <td>${formatBytes(row.size)}</td>
       </tr>
     `;
   }
@@ -490,6 +494,7 @@
           <dt>마지막 대화</dt><dd>${formatDate(row.lastTime)}</dd>
           <dt>열람/갱신 추정</dt><dd>${formatDate(row.lastInteraction)}</dd>
           <dt>사용자 메시지</dt><dd>${row.userMessages}</dd>
+          <dt>용량</dt><dd>${formatBytes(row.size)}</dd>
         </dl>
       </article>
     `;
@@ -824,7 +829,76 @@
       lastTime,
       lastInteraction: Number.isFinite(char.lastInteraction) ? char.lastInteraction : 0,
       userMessages,
+      size: await estimateCharacterTotalSize(char),
     };
+  }
+
+  async function estimateCharacterTotalSize(char) {
+    const assetRefs = collectCharacterAssetRefs(char);
+    const assetBytes = await estimateAssetRefsSize(assetRefs);
+    return estimateSize(char) + assetBytes;
+  }
+
+  function collectCharacterAssetRefs(char) {
+    const refs = new Set();
+    addAssetRef(refs, char?.image);
+    if (Array.isArray(char?.ccAssets)) {
+      char.ccAssets.forEach((asset) => addAssetRef(refs, asset?.uri || asset?.name || asset?.path));
+    }
+    return Array.from(refs);
+  }
+
+  function addAssetRef(refs, value) {
+    const ref = String(value || "").trim();
+    if (!ref) return;
+    if (/^(data:|https?:|blob:|file:|tauri:|\/)/i.test(ref)) return;
+    refs.add(ref);
+  }
+
+  async function estimateAssetRefsSize(refs) {
+    let total = 0;
+    for (const ref of refs) {
+      const bytes = await readAssetSize(ref);
+      total += bytes;
+    }
+    return total;
+  }
+
+  async function readAssetSize(ref) {
+    const attempts = Array.from(new Set([
+      ref,
+      ref.replace(/^assets[\\/]/, ""),
+      ref.split(/[\\/]/).pop(),
+    ].filter(Boolean)));
+
+    for (const path of attempts) {
+      try {
+        const data = await R.readImage(path);
+        const size = getBinaryLikeSize(data);
+        if (size > 0) return size;
+      } catch {
+        // Some assets may be missing, remote-only, or not readable through readImage.
+      }
+    }
+    return 0;
+  }
+
+  function getBinaryLikeSize(data) {
+    if (!data) return 0;
+    if (typeof data === "string") {
+      const comma = data.indexOf(",");
+      if (data.startsWith("data:") && comma >= 0) {
+        return Math.floor((data.length - comma - 1) * 3 / 4);
+      }
+      return new TextEncoder().encode(data).length;
+    }
+    if (data instanceof ArrayBuffer) return data.byteLength;
+    if (ArrayBuffer.isView(data)) return data.byteLength;
+    if (Array.isArray(data)) return data.length;
+    if (data?.data && Array.isArray(data.data)) return data.data.length;
+    if (Number.isFinite(data?.byteLength)) return data.byteLength;
+    if (Number.isFinite(data?.size)) return data.size;
+    return 0;
   }
 
   async function getCharacterImageSource(char) {
@@ -1031,7 +1105,7 @@
       .toolbar span { color: #d5cec1; }
       .hint { margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
       .desktop-table { overflow: auto; border: 1px solid #303744; border-radius: 8px; background: #171b23; }
-      table { width: 100%; border-collapse: collapse; min-width: 780px; }
+      table { width: 100%; border-collapse: collapse; min-width: 920px; }
       th, td { padding: 11px 12px; border-bottom: 1px solid #2b313b; text-align: left; vertical-align: middle; }
       th { background: #202631; }
       .selectable-row {
@@ -1276,14 +1350,15 @@
     document.head.appendChild(style);
   }
 
-  await R.registerSetting("리스 맥가이버", openPanel, "🛠️", "html", "risu-macgyver-settings");
+  await R.registerSetting("리스 사이드킥", openPanel, "🛠️", "html", "risu-sidekick-settings");
   await R.registerButton({
-    name: "리스 맥가이버",
+    name: "리스킥",
     icon: "🛠️",
     iconType: "html",
     location: "hamburger",
-    id: "risu-macgyver-button",
+    id: "risu-sidekick-button",
   }, openPanel);
 
-  console.log(`[Risu MacGyver] Loaded v${PLUGIN_VERSION}`);
+  console.log(`[Risu Sidekick] Loaded v${PLUGIN_VERSION}`);
 })();
+

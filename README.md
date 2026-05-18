@@ -1,13 +1,13 @@
-# 리스 맥가이버
+# 리스 사이드킥
 
-RisuAI를 오래 쓰면서 생기는 잔손 가는 정리 작업을 모아 둔 유틸리티 플러그인입니다.
+RisuAI를 오래 쓰면서 생기는 잔손 가는 정리 작업을 모아 둔 유틸리티 플러그인입니다. 별칭은 리스킥입니다.
 
 ## 설치
 
 RisuAI 플러그인 가져오기에서 아래 raw 파일을 사용합니다.
 
 ```text
-https://raw.githubusercontent.com/Lukaku-ai/risu-macgyver/main/risu-macgyver.js
+https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/main/risu-sidekick.js
 ```
 
 ## 현재 기능
@@ -18,4 +18,4 @@ https://raw.githubusercontent.com/Lukaku-ai/risu-macgyver/main/risu-macgyver.js
 
 ## 문서
 
-기획과 변경 기록은 `docs/리스 맥가이버 기획.md`에 정리되어 있습니다.
+기획과 변경 기록은 `docs/리스 사이드킥 기획.md`에 정리되어 있습니다.
