@@ -1,9 +1,9 @@
 //@name risu_sidekick
-//@display-name 리스 사이드킥 v0.2.2
+//@display-name 리스 사이드킥 v0.2.3
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.2.2
-//@changes 리스 사이드킥 이름 확정, 잠든 봇 정리에 에셋 포함 총 용량 표시
+//@version 0.2.3
+//@changes 잠든 봇 스캔 진행률 표시, CharX 기준 에셋 용량 추정 개선
 //@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/refs/heads/main/risu-sidekick.latest.js
 
 (async () => {
@@ -13,7 +13,7 @@
     return;
   }
 
-  const PLUGIN_VERSION = "0.2.2";
+  const PLUGIN_VERSION = "0.2.3";
   const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
   const MS_DAY = 24 * 60 * 60 * 1000;
@@ -46,6 +46,7 @@
     tab: "storage",
     busy: false,
     status: "준비됨",
+    progress: null,
     storageRows: [],
     storageSort: { key: "size", dir: "desc" },
     selectedStorage: new Set(),
@@ -123,8 +124,9 @@
     return "알 수 없음";
   }
 
-  async function showPermissionOverlay(message) {
+  async function showPermissionOverlay(message, progress = null) {
     state.busy = true;
+    state.progress = progress;
     setStatus(message);
     syncBusyLayer();
     await new Promise((resolve) => setTimeout(resolve, 80));
@@ -132,9 +134,18 @@
 
   function clearBusy(message) {
     state.busy = false;
+    state.progress = null;
     setStatus(message);
     syncBusyLayer();
     refreshPanel();
+  }
+
+  function setBusyProgress(message, current, total) {
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const percent = Math.max(0, Math.min(100, Math.round((Number(current) || 0) / safeTotal * 100)));
+    state.progress = percent;
+    setStatus(`${message} ${percent}%`);
+    syncBusyLayer();
   }
 
   async function getDb(keys) {
@@ -174,7 +185,14 @@
       layer.className = "busy-layer";
       shell.appendChild(layer);
     }
-    layer.innerHTML = `<div class="loader"></div><p>${escapeHtml(state.status)}</p>`;
+    const progress = Number.isFinite(state.progress) ? state.progress : null;
+    layer.innerHTML = `
+      <div class="loader ${progress === null ? "indeterminate" : ""}">
+        <span style="width:${progress === null ? 42 : progress}%"></span>
+      </div>
+      <p>${escapeHtml(state.status)}</p>
+      ${progress === null ? "" : `<strong>${progress}%</strong>`}
+    `;
   }
 
   async function saveSnapshot(kind, payload) {
@@ -448,7 +466,7 @@
         <button data-action="trash-dormant" class="danger">선택 휴지통</button>
         <span>${rows.length}개 표시, ${formatBytes(totalSize)}</span>
       </div>
-      <p class="hint">용량은 봇 데이터와 봇카드/추가 에셋 파일을 합산한 추정값입니다. 영구 삭제가 아니라 RisuAI의 휴지통 표시인 <code>trashTime</code>을 설정합니다.</p>
+      <p class="hint">용량은 봇 데이터와 봇카드, 추가 에셋, 감정 이미지, 일부 음성 에셋을 합산한 CharX 기준 추정값입니다.</p>
       <div class="desktop-table">
         <table>
           <thead>
@@ -800,7 +818,14 @@
     const db = await getDb(["characters"]);
     if (!db) return;
     const now = Date.now();
-    const rows = await Promise.all((db.characters || []).map((char, index) => analyzeDormantChar(char, index, now)));
+    const characters = db.characters || [];
+    const rows = [];
+    for (let index = 0; index < characters.length; index += 1) {
+      setBusyProgress("잠든 봇과 에셋 용량을 스캔하는 중...", index, characters.length);
+      rows.push(await analyzeDormantChar(characters[index], index, now));
+      if (index % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    setBusyProgress("잠든 봇과 에셋 용량을 스캔하는 중...", characters.length, characters.length);
     state.dormantRows = rows.filter(Boolean);
     state.selectedDormant = new Set();
     clearBusy(`정리 후보 봇 ${state.dormantRows.length}개를 찾았습니다.`);
@@ -845,13 +870,25 @@
     if (Array.isArray(char?.ccAssets)) {
       char.ccAssets.forEach((asset) => addAssetRef(refs, asset?.uri || asset?.name || asset?.path));
     }
+    if (Array.isArray(char?.additionalAssets)) {
+      char.additionalAssets.forEach((asset) => addAssetRef(refs, Array.isArray(asset) ? asset[1] : asset?.uri || asset?.path));
+    }
+    if (Array.isArray(char?.emotionImages)) {
+      char.emotionImages.forEach((asset) => addAssetRef(refs, Array.isArray(asset) ? asset[1] : asset?.uri || asset?.path));
+    }
+    if (char?.vits?.files && typeof char.vits.files === "object") {
+      Object.values(char.vits.files).forEach((value) => addAssetRef(refs, value));
+    }
+    if (char?.gptSoVitsConfig?.ref_audio_data?.assetId) {
+      addAssetRef(refs, char.gptSoVitsConfig.ref_audio_data.assetId);
+    }
     return Array.from(refs);
   }
 
   function addAssetRef(refs, value) {
     const ref = String(value || "").trim();
     if (!ref) return;
-    if (/^(data:|https?:|blob:|file:|tauri:|\/)/i.test(ref)) return;
+    if (/^https?:|^blob:|^tauri:/i.test(ref)) return;
     refs.add(ref);
   }
 
@@ -865,10 +902,13 @@
   }
 
   async function readAssetSize(ref) {
+    const inlineSize = estimateInlineAssetSize(ref);
+    if (inlineSize > 0) return inlineSize;
+    const normalizedRef = ref.startsWith("__asset:") ? ref.slice("__asset:".length) : ref;
     const attempts = Array.from(new Set([
-      ref,
-      ref.replace(/^assets[\\/]/, ""),
-      ref.split(/[\\/]/).pop(),
+      normalizedRef,
+      normalizedRef.replace(/^assets[\\/]/, ""),
+      normalizedRef.split(/[\\/]/).pop(),
     ].filter(Boolean)));
 
     for (const path of attempts) {
@@ -879,6 +919,19 @@
       } catch {
         // Some assets may be missing, remote-only, or not readable through readImage.
       }
+    }
+    return 0;
+  }
+
+  function estimateInlineAssetSize(ref) {
+    const text = String(ref || "");
+    if (!text) return 0;
+    const comma = text.indexOf(",");
+    if (text.startsWith("data:") && comma >= 0) {
+      return Math.floor((text.length - comma - 1) * 3 / 4);
+    }
+    if (/^[A-Za-z0-9+/=\r\n]+$/.test(text) && text.length > 256) {
+      return Math.floor(text.replace(/\s/g, "").length * 3 / 4);
     }
     return 0;
   }
@@ -1277,6 +1330,13 @@
         padding: 14px;
         box-shadow: 0 12px 40px rgba(0, 0, 0, .38);
       }
+      .busy-layer strong {
+        display: block;
+        margin-top: 6px;
+        color: #c4a6ff;
+        font-size: 13px;
+        text-align: right;
+      }
       .permission-mode { pointer-events: none; }
       .permission-mode .busy-layer { pointer-events: auto; opacity: .92; }
       .loader {
@@ -1286,12 +1346,13 @@
         background: #11151b;
         margin-bottom: 10px;
       }
-      .loader::before {
-        content: "";
+      .loader span {
         display: block;
-        width: 42%;
         height: 100%;
         background: #a675ff;
+        transition: width .18s ease;
+      }
+      .loader.indeterminate span {
         animation: loading 1s infinite ease-in-out;
       }
       @keyframes loading {
