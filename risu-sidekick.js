@@ -1,9 +1,9 @@
 //@name risu_sidekick
-//@display-name 리스 사이드킥 v0.2.3
+//@display-name 리스 사이드킥 v0.2.4
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.2.3
-//@changes 잠든 봇 스캔 진행률 표시, CharX 기준 에셋 용량 추정 개선
+//@version 0.2.4
+//@changes 잠든 봇 목록 스캔 속도 개선, 봇별 정밀 용량 계산 추가
 //@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/refs/heads/main/risu-sidekick.latest.js
 
 (async () => {
@@ -13,7 +13,7 @@
     return;
   }
 
-  const PLUGIN_VERSION = "0.2.3";
+  const PLUGIN_VERSION = "0.2.4";
   const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
   const MS_DAY = 24 * 60 * 60 * 1000;
@@ -62,6 +62,7 @@
   };
 
   const imageCache = new Map();
+  const assetSizeCache = new Map();
 
   const $ = (selector) => document.querySelector(selector);
 
@@ -466,7 +467,7 @@
         <button data-action="trash-dormant" class="danger">선택 휴지통</button>
         <span>${rows.length}개 표시, ${formatBytes(totalSize)}</span>
       </div>
-      <p class="hint">용량은 봇 데이터와 봇카드, 추가 에셋, 감정 이미지, 일부 음성 에셋을 합산한 CharX 기준 추정값입니다.</p>
+      <p class="hint">목록 스캔은 빠른 추정값을 먼저 표시합니다. 이미지가 많은 봇은 각 행의 정밀 계산 버튼으로 필요한 봇만 실제 에셋 용량까지 확인하세요.</p>
       <div class="desktop-table">
         <table>
           <thead>
@@ -497,7 +498,7 @@
         <td>${formatDate(row.lastTime)}</td>
         <td>${formatDate(row.lastInteraction)}</td>
         <td>${row.userMessages}</td>
-        <td>${formatBytes(row.size)}</td>
+        <td>${renderDormantSize(row)}</td>
       </tr>
     `;
   }
@@ -512,9 +513,21 @@
           <dt>마지막 대화</dt><dd>${formatDate(row.lastTime)}</dd>
           <dt>열람/갱신 추정</dt><dd>${formatDate(row.lastInteraction)}</dd>
           <dt>사용자 메시지</dt><dd>${row.userMessages}</dd>
-          <dt>용량</dt><dd>${formatBytes(row.size)}</dd>
+          <dt>용량</dt><dd>${renderDormantSize(row)}</dd>
         </dl>
       </article>
+    `;
+  }
+
+  function renderDormantSize(row) {
+    const label = row.sizeMode === "exact" ? "정밀" : "빠른 추정";
+    const pending = row.pendingAssetCount ? ` · 미확인 에셋 ${row.pendingAssetCount}개` : "";
+    return `
+      <div class="size-cell">
+        <strong>${formatBytes(row.size)}</strong>
+        <span>${label}${pending}</span>
+        ${row.sizeMode === "exact" ? "" : `<button data-action="measure-dormant" data-index="${row.index}">정밀 계산</button>`}
+      </div>
     `;
   }
 
@@ -624,6 +637,7 @@
       if (action === "clear-all-greetings") setAllGreetings(false);
       if (action === "apply-greetings") await applyGreetingCleanup();
       if (action === "scan-dormant") await scanDormant();
+      if (action === "measure-dormant") await measureDormantSize(Number(source.dataset.index));
       if (action === "trash-dormant") await trashDormant();
     } catch (error) {
       state.busy = false;
@@ -821,11 +835,11 @@
     const characters = db.characters || [];
     const rows = [];
     for (let index = 0; index < characters.length; index += 1) {
-      setBusyProgress("잠든 봇과 에셋 용량을 스캔하는 중...", index, characters.length);
+      setBusyProgress("잠든 봇 목록을 빠르게 스캔하는 중...", index, characters.length);
       rows.push(await analyzeDormantChar(characters[index], index, now));
       if (index % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    setBusyProgress("잠든 봇과 에셋 용량을 스캔하는 중...", characters.length, characters.length);
+    setBusyProgress("잠든 봇 목록을 빠르게 스캔하는 중...", characters.length, characters.length);
     state.dormantRows = rows.filter(Boolean);
     state.selectedDormant = new Set();
     clearBusy(`정리 후보 봇 ${state.dormantRows.length}개를 찾았습니다.`);
@@ -854,14 +868,29 @@
       lastTime,
       lastInteraction: Number.isFinite(char.lastInteraction) ? char.lastInteraction : 0,
       userMessages,
-      size: await estimateCharacterTotalSize(char),
+      ...estimateCharacterQuickSize(char),
     };
   }
 
-  async function estimateCharacterTotalSize(char) {
+  function estimateCharacterQuickSize(char) {
     const assetRefs = collectCharacterAssetRefs(char);
-    const assetBytes = await estimateAssetRefsSize(assetRefs);
-    return estimateSize(char) + assetBytes;
+    const inlineBytes = assetRefs.reduce((sum, ref) => sum + estimateInlineAssetSize(ref), 0);
+    const pendingAssetCount = assetRefs.filter((ref) => estimateInlineAssetSize(ref) === 0).length;
+    return {
+      size: estimateSize(char) + inlineBytes,
+      sizeMode: "quick",
+      assetCount: assetRefs.length,
+      pendingAssetCount,
+    };
+  }
+
+  async function estimateCharacterTotalSize(char, onProgress) {
+    const assetRefs = collectCharacterAssetRefs(char);
+    const assetBytes = await estimateAssetRefsSize(assetRefs, onProgress);
+    return {
+      size: estimateSize(char) + assetBytes,
+      assetCount: assetRefs.length,
+    };
   }
 
   function collectCharacterAssetRefs(char) {
@@ -892,18 +921,25 @@
     refs.add(ref);
   }
 
-  async function estimateAssetRefsSize(refs) {
+  async function estimateAssetRefsSize(refs, onProgress) {
     let total = 0;
-    for (const ref of refs) {
+    for (let index = 0; index < refs.length; index += 1) {
+      const ref = refs[index];
+      if (onProgress) onProgress(index, refs.length, ref);
       const bytes = await readAssetSize(ref);
       total += bytes;
+      if (index % 12 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
     }
     return total;
   }
 
   async function readAssetSize(ref) {
+    if (assetSizeCache.has(ref)) return assetSizeCache.get(ref);
     const inlineSize = estimateInlineAssetSize(ref);
-    if (inlineSize > 0) return inlineSize;
+    if (inlineSize > 0) {
+      assetSizeCache.set(ref, inlineSize);
+      return inlineSize;
+    }
     const normalizedRef = ref.startsWith("__asset:") ? ref.slice("__asset:".length) : ref;
     const attempts = Array.from(new Set([
       normalizedRef,
@@ -915,11 +951,15 @@
       try {
         const data = await R.readImage(path);
         const size = getBinaryLikeSize(data);
-        if (size > 0) return size;
+        if (size > 0) {
+          assetSizeCache.set(ref, size);
+          return size;
+        }
       } catch {
         // Some assets may be missing, remote-only, or not readable through readImage.
       }
     }
+    assetSizeCache.set(ref, 0);
     return 0;
   }
 
@@ -934,6 +974,28 @@
       return Math.floor(text.replace(/\s/g, "").length * 3 / 4);
     }
     return 0;
+  }
+
+  async function measureDormantSize(index) {
+    const row = state.dormantRows.find((item) => item.index === index);
+    if (!row) return;
+    const db = await getDb(["characters"]);
+    if (!db) return;
+    const char = db.characters?.[index];
+    if (!char) {
+      setStatus("봇 데이터를 찾지 못했습니다. 다시 스캔해 주세요.");
+      return;
+    }
+    await showPermissionOverlay(`${row.name} 정밀 용량을 계산하는 중...`, 0);
+    const result = await estimateCharacterTotalSize(char, (current, total) => {
+      setBusyProgress(`${row.name} 에셋 용량을 계산하는 중...`, current, total);
+    });
+    row.size = result.size;
+    row.sizeMode = "exact";
+    row.assetCount = result.assetCount;
+    row.pendingAssetCount = 0;
+    setBusyProgress(`${row.name} 에셋 용량을 계산하는 중...`, result.assetCount, result.assetCount);
+    clearBusy(`${row.name} 정밀 용량 계산 완료: ${formatBytes(row.size)}`);
   }
 
   function getBinaryLikeSize(data) {
@@ -1176,6 +1238,24 @@
         color: #b98cff;
         font-size: 12px;
         font-weight: 700;
+      }
+      .size-cell {
+        display: grid;
+        gap: 4px;
+        min-width: 150px;
+      }
+      .size-cell strong {
+        font-size: 14px;
+      }
+      .size-cell span {
+        color: #aaa79f;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .size-cell button {
+        width: max-content;
+        padding: 6px 9px;
+        font-size: 12px;
       }
       code { color: #d7c2ff; word-break: break-all; }
       .sort-head {
