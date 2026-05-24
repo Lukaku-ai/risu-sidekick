@@ -1,9 +1,9 @@
 //@name risu_sidekick
-//@display-name 리스 사이드킥 v0.2.4
+//@display-name 리스 사이드킥 v0.2.5
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.2.4
-//@changes 잠든 봇 목록 스캔 속도 개선, 봇별 정밀 용량 계산 추가
+//@version 0.2.5
+//@changes Small Tools 탭 추가, 사이드패널 크기 조절 토글 추가, 실행 버튼 노출 개선
 //@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/refs/heads/main/risu-sidekick.latest.js
 
 (async () => {
@@ -13,13 +13,21 @@
     return;
   }
 
-  const PLUGIN_VERSION = "0.2.4";
+  const PLUGIN_VERSION = "0.2.5";
   const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
   const MS_DAY = 24 * 60 * 60 * 1000;
   const OLD_3M = 90 * MS_DAY;
   const OLD_6M = 180 * MS_DAY;
   const OLD_1Y = 365 * MS_DAY;
+  const TOOLS_CONFIG_KEY = "risu_sidekick_tools_config";
+  const SIDE_PANEL_WIDTH_KEY = "risu_sidekick_side_panel_width";
+  const SIDE_PANEL_STYLE_ID = "risu-sidekick-side-panel-resizer-style";
+  const SIDE_PANEL_HANDLE_CLASS = "risu-sidekick-side-panel-resizer-handle";
+  const SIDE_PANEL_SELECTOR = ".setting-area";
+  const SIDE_PANEL_MIN_WIDTH = 280;
+  const SIDE_PANEL_MAX_WIDTH = 760;
+  const SIDE_PANEL_DEFAULT_WIDTH = 384;
 
   const FEATURES = [
     {
@@ -40,6 +48,12 @@
       short: "잠든 봇 정리",
       desc: "대화가 없거나 오래 쉬고 있는 봇을 찾아 휴지통으로 보냅니다.",
     },
+    {
+      id: "tools",
+      title: "작은 도구함",
+      short: "도구",
+      desc: "따로 플러그인으로 빼기엔 소소하지만 유용한 Risu UI 편의 기능을 모읍니다.",
+    },
   ];
 
   const state = {
@@ -57,12 +71,22 @@
     dormantFilter: "all",
     dormantSort: { key: "lastTime", dir: "asc" },
     selectedDormant: new Set(),
+    tools: {
+      sidePanelResize: false,
+    },
     mobileOpen: false,
     dbPermissionChecked: false,
   };
 
   const imageCache = new Map();
   const assetSizeCache = new Map();
+  const sidePanelResizer = {
+    rootDoc: null,
+    observer: null,
+    retryTimer: null,
+    dragListeners: [],
+    enabled: false,
+  };
 
   const $ = (selector) => document.querySelector(selector);
 
@@ -298,7 +322,23 @@
   function renderTab() {
     if (state.tab === "storage") return renderStorage();
     if (state.tab === "greetings") return renderGreetings();
+    if (state.tab === "tools") return renderTools();
     return renderDormant();
+  }
+
+  function renderTools() {
+    return `
+      <div class="tool-list">
+        <label class="tool-toggle">
+          <input type="checkbox" data-tool-toggle="sidePanelResize" ${state.tools.sidePanelResize ? "checked" : ""}>
+          <span>
+            <strong>사이드패널 크기 조절</strong>
+            <small>RisuAI 왼쪽 사이드패널 오른쪽 끝에 드래그 손잡이를 추가하고 폭을 기억합니다.</small>
+          </span>
+        </label>
+      </div>
+      <p class="hint">이 탭은 작지만 자주 쓰게 될 UI 편의 기능을 모아 두는 자리입니다.</p>
+    `;
   }
 
   function totalGreetingCount() {
@@ -611,6 +651,11 @@
         refreshPanel();
       };
     });
+    document.querySelectorAll("[data-tool-toggle]").forEach((input) => {
+      input.onchange = () => {
+        setToolEnabled(input.dataset.toolToggle, Boolean(input.checked));
+      };
+    });
 
     const filter = $("#dormant-filter");
     if (filter) {
@@ -686,6 +731,219 @@
       group.items.forEach((item) => toggleSet(state.selectedGreeting, item.id, checked));
     });
     refreshPanel();
+  }
+
+  async function loadToolsConfig() {
+    try {
+      const saved = await R.pluginStorage.getItem(TOOLS_CONFIG_KEY);
+      const parsed = typeof saved === "string" ? JSON.parse(saved) : saved;
+      if (parsed && typeof parsed === "object") {
+        state.tools = { ...state.tools, ...parsed };
+      }
+    } catch (error) {
+      console.warn("[Risu Sidekick] Could not load tools config.", error);
+    }
+  }
+
+  async function saveToolsConfig() {
+    await R.pluginStorage.setItem(TOOLS_CONFIG_KEY, JSON.stringify(state.tools));
+  }
+
+  async function setToolEnabled(toolId, enabled) {
+    if (!(toolId in state.tools)) return;
+    state.tools[toolId] = enabled;
+    await saveToolsConfig();
+
+    if (toolId === "sidePanelResize") {
+      if (enabled) await enableSidePanelResizer();
+      else await disableSidePanelResizer();
+      setStatus(enabled ? "사이드패널 크기 조절을 켰습니다." : "사이드패널 크기 조절을 껐습니다.");
+    }
+
+    refreshPanel();
+  }
+
+  const clampSidePanelWidth = (value) => (
+    Math.max(SIDE_PANEL_MIN_WIDTH, Math.min(SIDE_PANEL_MAX_WIDTH, Number(value) || SIDE_PANEL_DEFAULT_WIDTH))
+  );
+
+  async function getSidePanelWidth() {
+    const raw = await R.pluginStorage.getItem(SIDE_PANEL_WIDTH_KEY);
+    return clampSidePanelWidth(Number.parseInt(String(raw || ""), 10));
+  }
+
+  async function saveSidePanelWidth(width) {
+    await R.pluginStorage.setItem(SIDE_PANEL_WIDTH_KEY, String(clampSidePanelWidth(width)));
+  }
+
+  async function getRootDoc() {
+    sidePanelResizer.rootDoc ||= await R.getRootDocument();
+    return sidePanelResizer.rootDoc;
+  }
+
+  async function ensureSidePanelStyle() {
+    const rootDoc = await getRootDoc();
+    if (await rootDoc.querySelector(`#${SIDE_PANEL_STYLE_ID}`)) return;
+
+    const style = rootDoc.createElement("style");
+    await style.setAttribute("id", SIDE_PANEL_STYLE_ID);
+    await style.setInnerHTML(`
+      .${SIDE_PANEL_HANDLE_CLASS} {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 16px;
+        height: 100%;
+        cursor: col-resize;
+        z-index: 9999;
+        touch-action: none;
+        background: linear-gradient(to right, transparent, rgba(166, 117, 255, .22));
+      }
+      .${SIDE_PANEL_HANDLE_CLASS}::after {
+        content: "";
+        position: absolute;
+        top: 8px;
+        right: 5px;
+        width: 4px;
+        height: calc(100% - 16px);
+        min-height: 42px;
+        border-radius: 999px;
+        background: #a675ff;
+        opacity: .75;
+        box-shadow: 0 0 0 1px rgba(20, 18, 28, .35), 0 0 10px rgba(166, 117, 255, .28);
+        transition: opacity .12s ease, background .12s ease;
+      }
+      .${SIDE_PANEL_HANDLE_CLASS}:hover {
+        background: linear-gradient(to right, transparent, rgba(166, 117, 255, .36));
+      }
+      .${SIDE_PANEL_HANDLE_CLASS}:hover::after {
+        opacity: 1;
+        background: #c4a6ff;
+      }
+      body.risu-sidekick-panel-resizing,
+      body.risu-sidekick-panel-resizing * {
+        cursor: col-resize !important;
+        user-select: none !important;
+      }
+    `);
+
+    const head = await rootDoc.querySelector("head");
+    if (head) await head.appendChild(style);
+  }
+
+  async function applySidePanelWidth(panel, width) {
+    const px = `${clampSidePanelWidth(width)}px`;
+    await panel.setStyle("width", px);
+    await panel.setStyle("minWidth", px);
+    await panel.setStyle("maxWidth", px);
+    await panel.setStyle("--sidebar-size", px);
+
+    const root = await (await getRootDoc()).querySelector(":root");
+    if (root) await root.setStyle("--sidebar-size", px);
+  }
+
+  async function clearSidePanelDrag() {
+    for (const entry of sidePanelResizer.dragListeners.splice(0)) {
+      await entry.element.removeEventListener(entry.type, entry.id);
+    }
+
+    const body = await (await getRootDoc()).querySelector("body");
+    if (body) await body.removeClass("risu-sidekick-panel-resizing");
+  }
+
+  async function beginSidePanelDrag(panel, event) {
+    await clearSidePanelDrag();
+
+    const rootDoc = await getRootDoc();
+    const rect = await panel.getBoundingClientRect();
+    const startX = Number(event.clientX || 0);
+    const startWidth = rect.width || await getSidePanelWidth();
+    const body = await rootDoc.querySelector("body");
+    if (body) await body.addClass("risu-sidekick-panel-resizing");
+
+    const moveId = await rootDoc.addEventListener("mousemove", async (moveEvent) => {
+      if (!sidePanelResizer.enabled) return;
+      const nextWidth = clampSidePanelWidth(startWidth + Number(moveEvent.clientX || 0) - startX);
+      await applySidePanelWidth(panel, nextWidth);
+      await saveSidePanelWidth(nextWidth);
+    });
+
+    const upId = await rootDoc.addEventListener("mouseup", async () => {
+      await clearSidePanelDrag();
+    });
+
+    sidePanelResizer.dragListeners.push(
+      { element: rootDoc, type: "mousemove", id: moveId },
+      { element: rootDoc, type: "mouseup", id: upId },
+    );
+  }
+
+  async function installSidePanelResizer() {
+    if (!sidePanelResizer.enabled) return;
+
+    const rootDoc = await getRootDoc();
+    await ensureSidePanelStyle();
+
+    const panels = await rootDoc.querySelectorAll(SIDE_PANEL_SELECTOR);
+    for (const panel of panels) {
+      if (await panel.querySelector(`.${SIDE_PANEL_HANDLE_CLASS}`)) continue;
+
+      await panel.setStyle("position", "relative");
+      await panel.setStyle("flexShrink", "0");
+      await applySidePanelWidth(panel, await getSidePanelWidth());
+
+      const handle = rootDoc.createElement("div");
+      await handle.addClass(SIDE_PANEL_HANDLE_CLASS);
+      await handle.setAttribute("title", "Drag to resize side panel");
+      await handle.addEventListener("mousedown", async (event) => {
+        await beginSidePanelDrag(panel, event);
+      });
+      await panel.appendChild(handle);
+    }
+  }
+
+  async function scheduleSidePanelInstall() {
+    if (sidePanelResizer.retryTimer || !sidePanelResizer.enabled) return;
+    sidePanelResizer.retryTimer = setTimeout(async () => {
+      sidePanelResizer.retryTimer = null;
+      await installSidePanelResizer();
+    }, 700);
+  }
+
+  async function enableSidePanelResizer() {
+    sidePanelResizer.enabled = true;
+    await installSidePanelResizer();
+
+    if (!sidePanelResizer.observer) {
+      const rootDoc = await getRootDoc();
+      const body = await rootDoc.querySelector("body");
+      if (body) {
+        sidePanelResizer.observer = await R.createMutationObserver(async () => {
+          await scheduleSidePanelInstall();
+        });
+        await sidePanelResizer.observer.observe(body, { childList: true, subtree: true });
+      }
+    }
+  }
+
+  async function disableSidePanelResizer() {
+    sidePanelResizer.enabled = false;
+    if (sidePanelResizer.retryTimer) {
+      clearTimeout(sidePanelResizer.retryTimer);
+      sidePanelResizer.retryTimer = null;
+    }
+    await clearSidePanelDrag();
+
+    const rootDoc = await getRootDoc();
+    const panels = await rootDoc.querySelectorAll(SIDE_PANEL_SELECTOR);
+    for (const panel of panels) {
+      const handle = await panel.querySelector(`.${SIDE_PANEL_HANDLE_CLASS}`);
+      if (handle) await panel.removeChild(handle);
+    }
+
+    const style = await rootDoc.querySelector(`#${SIDE_PANEL_STYLE_ID}`);
+    const head = await rootDoc.querySelector("head");
+    if (style && head) await head.removeChild(style);
   }
 
   async function scanStorage() {
@@ -1219,6 +1477,42 @@
       .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
       .toolbar span { color: #d5cec1; }
       .hint { margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
+      .tool-list {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .tool-toggle {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        border: 1px solid #303744;
+        background: #171b23;
+        border-radius: 8px;
+        padding: 14px;
+        cursor: pointer;
+      }
+      .tool-toggle input {
+        width: 18px;
+        height: 18px;
+        margin: 2px 0 0;
+        accent-color: #a675ff;
+      }
+      .tool-toggle span {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+      .tool-toggle strong {
+        font-size: 15px;
+        line-height: 1.35;
+      }
+      .tool-toggle small {
+        color: #aaa79f;
+        font-size: 13px;
+        line-height: 1.45;
+      }
       .desktop-table { overflow: auto; border: 1px solid #303744; border-radius: 8px; background: #171b23; }
       table { width: 100%; border-collapse: collapse; min-width: 920px; }
       th, td { padding: 11px 12px; border-bottom: 1px solid #2b313b; text-align: left; vertical-align: middle; }
@@ -1491,13 +1785,28 @@
     document.head.appendChild(style);
   }
 
+  await loadToolsConfig();
+  if (state.tools.sidePanelResize) {
+    await enableSidePanelResizer();
+  }
+  await R.onUnload(async () => {
+    await disableSidePanelResizer();
+  });
+
   await R.registerSetting("리스 사이드킥", openPanel, "🛠️", "html", "risu-sidekick-settings");
   await R.registerButton({
-    name: "리스킥",
+    name: "리스 사이드킥",
     icon: "🛠️",
     iconType: "html",
     location: "hamburger",
-    id: "risu-sidekick-button",
+    id: "risu-sidekick-hamburger-button",
+  }, openPanel);
+  await R.registerButton({
+    name: "리스 사이드킥",
+    icon: "🛠️",
+    iconType: "html",
+    location: "action",
+    id: "risu-sidekick-action-button",
   }, openPanel);
 
   console.log(`[Risu Sidekick] Loaded v${PLUGIN_VERSION}`);
