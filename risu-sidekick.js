@@ -1,9 +1,9 @@
 //@name risu_sidekick
-//@display-name 리스 사이드킥 v0.2.5
+//@display-name 리스 사이드킥 v0.2.6
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.2.5
-//@changes Small Tools 탭 추가, 사이드패널 크기 조절 토글 추가, 실행 버튼 노출 개선
+//@version 0.2.6
+//@changes 버튼 등록 안정화, Small Tools 초기화 실패 격리
 //@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/refs/heads/main/risu-sidekick.latest.js
 
 (async () => {
@@ -13,7 +13,7 @@
     return;
   }
 
-  const PLUGIN_VERSION = "0.2.5";
+  const PLUGIN_VERSION = "0.2.6";
   const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
   const MS_DAY = 24 * 60 * 60 * 1000;
@@ -1785,21 +1785,13 @@
     document.head.appendChild(style);
   }
 
-  await loadToolsConfig();
-  if (state.tools.sidePanelResize) {
-    await enableSidePanelResizer();
-  }
-  await R.onUnload(async () => {
-    await disableSidePanelResizer();
-  });
-
   await R.registerSetting("리스 사이드킥", openPanel, "🛠️", "html", "risu-sidekick-settings");
   await R.registerButton({
     name: "리스 사이드킥",
     icon: "🛠️",
     iconType: "html",
     location: "hamburger",
-    id: "risu-sidekick-hamburger-button",
+    id: "risu-sidekick-button",
   }, openPanel);
   await R.registerButton({
     name: "리스 사이드킥",
@@ -1808,6 +1800,18 @@
     location: "action",
     id: "risu-sidekick-action-button",
   }, openPanel);
+
+  try {
+    await loadToolsConfig();
+    if (state.tools.sidePanelResize) {
+      await enableSidePanelResizer();
+    }
+    await R.onUnload(async () => {
+      await disableSidePanelResizer();
+    });
+  } catch (error) {
+    console.error("[Risu Sidekick] Small Tools initialization failed.", error);
+  }
 
   console.log(`[Risu Sidekick] Loaded v${PLUGIN_VERSION}`);
 })();
