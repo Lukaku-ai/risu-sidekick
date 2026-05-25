@@ -1,9 +1,9 @@
 //@name risu_sidekick
-//@display-name 리스 사이드킥 v0.2.8
+//@display-name 리스 사이드킥 v0.2.9
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.2.8
-//@changes 첫 메시지 청소 저장 경로를 캐릭터별 저장 API로 변경
+//@version 0.2.9
+//@changes 저장소 소유자 직접 입력, 잠든 봇 표 단순화, 첫 메시지 청소 재스캔 복원
 //@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/refs/heads/main/risu-sidekick.latest.js
 
 (async () => {
@@ -13,7 +13,8 @@
     return;
   }
 
-  const PLUGIN_VERSION = "0.2.8";
+  const PLUGIN_VERSION = "0.2.9";
+  const STORAGE_OWNER_KEY = "risu_sidekick_storage_owner_overrides";
   const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
   const MS_DAY = 24 * 60 * 60 * 1000;
@@ -54,6 +55,8 @@
     status: "준비됨",
     progress: null,
     storageRows: [],
+    storageOwners: {},
+    storageOwnerOptions: [],
     storageSort: { key: "size", dir: "desc" },
     selectedStorage: new Set(),
     greetingGroups: [],
@@ -68,7 +71,6 @@
   };
 
   const imageCache = new Map();
-  const assetSizeCache = new Map();
 
   const $ = (selector) => document.querySelector(selector);
 
@@ -364,14 +366,17 @@
         <button data-action="delete-all-storage" class="danger outline">전체 삭제</button>
         <span>${rows.length}개, ${formatBytes(total)}</span>
       </div>
-      <p class="hint">소유자 표시는 저장소 키와 설치된 플러그인명을 비교한 추정값입니다. 확실하지 않은 항목은 최하단에 둡니다.</p>
+      <p class="hint">소유자는 직접 고칠 수 있습니다. 입력 후보에는 설치된 플러그인 목록을 띄웁니다.</p>
+      <datalist id="storage-owner-options">
+        ${state.storageOwnerOptions.map((owner) => `<option value="${escapeHtml(owner)}"></option>`).join("")}
+      </datalist>
       <div class="desktop-table">
         <table>
           <thead>
             <tr>
               <th></th>
               <th>${renderSortHead("저장소 키", "key", "storage")}</th>
-              <th>${renderSortHead("소유자 추정", "owner", "storage")}</th>
+              <th>${renderSortHead("소유자", "owner", "storage")}</th>
               <th>${renderSortHead("크기", "size", "storage")}</th>
             </tr>
           </thead>
@@ -388,7 +393,9 @@
       <tr class="selectable-row ${selected ? "selected" : ""}" data-toggle-storage="${escapeHtml(row.key)}">
         <td class="select-mark">${selected ? "선택됨" : ""}</td>
         <td><code>${escapeHtml(row.key)}</code></td>
-        <td>${escapeHtml(row.owner)}</td>
+        <td>
+          <input class="owner-input" data-storage-owner="${escapeHtml(row.key)}" list="storage-owner-options" value="${escapeHtml(row.owner)}" placeholder="소유자 입력">
+        </td>
         <td>${formatBytes(row.size)}</td>
       </tr>
     `;
@@ -400,7 +407,7 @@
       <article class="mobile-card selectable-card ${selected ? "selected" : ""}" data-toggle-storage="${escapeHtml(row.key)}">
         <dl>
           <dt>저장소 키</dt><dd><code>${escapeHtml(row.key)}</code></dd>
-          <dt>소유자 추정</dt><dd>${escapeHtml(row.owner)}</dd>
+          <dt>소유자</dt><dd><input class="owner-input" data-storage-owner="${escapeHtml(row.key)}" list="storage-owner-options" value="${escapeHtml(row.owner)}" placeholder="소유자 입력"></dd>
           <dt>크기</dt><dd>${formatBytes(row.size)}</dd>
         </dl>
       </article>
@@ -465,7 +472,6 @@
       if (key === "category") value = normalizeForSort(categoryLabel(a.category)).localeCompare(normalizeForSort(categoryLabel(b.category)), "ko-KR");
       if (key === "lastTime") value = (a.lastTime || 0) - (b.lastTime || 0);
       if (key === "userMessages") value = a.userMessages - b.userMessages;
-      if (key === "size") value = a.size - b.size;
       return dir === "asc" ? value : -value;
     });
     return rows;
@@ -473,7 +479,6 @@
 
   function renderDormant() {
     const rows = sortedDormantRows();
-    const totalSize = rows.reduce((sum, row) => sum + row.size, 0);
     return `
       <div class="toolbar">
         <button data-action="scan-dormant">스캔</button>
@@ -486,9 +491,9 @@
           ${filterOption("unknown", "날짜 불명")}
         </select>
         <button data-action="trash-dormant" class="danger">선택 휴지통</button>
-        <span>${rows.length}개 표시, ${formatBytes(totalSize)}</span>
+        <span>${rows.length}개 표시</span>
       </div>
-      <p class="hint">목록 스캔은 빠른 추정값을 먼저 표시합니다. 이미지가 많은 봇은 각 행의 정밀 계산 버튼으로 필요한 봇만 실제 에셋 용량까지 확인하세요.</p>
+      <p class="hint">RisuAI v3 플러그인 API에는 특정 봇이나 마지막 채팅으로 화면을 전환하는 공개 함수가 없어 바로 가기 버튼은 제공하지 않습니다.</p>
       <div class="desktop-table">
         <table>
           <thead>
@@ -497,12 +502,10 @@
               <th>${renderSortHead("봇", "name", "dormant")}</th>
               <th>${renderSortHead("분류", "category", "dormant")}</th>
               <th>${renderSortHead("마지막 대화", "lastTime", "dormant")}</th>
-              <th>최근 열람/갱신 추정</th>
               <th>${renderSortHead("사용자 메시지", "userMessages", "dormant")}</th>
-              <th>${renderSortHead("용량", "size", "dormant")}</th>
             </tr>
           </thead>
-          <tbody>${rows.map(renderDormantRow).join("") || `<tr><td colspan="7" class="empty">스캔 결과가 없습니다.</td></tr>`}</tbody>
+          <tbody>${rows.map(renderDormantRow).join("") || `<tr><td colspan="5" class="empty">스캔 결과가 없습니다.</td></tr>`}</tbody>
         </table>
       </div>
       <div class="mobile-list">${rows.map(renderDormantMobile).join("") || `<div class="empty-card">스캔 결과가 없습니다.</div>`}</div>
@@ -517,9 +520,7 @@
         <td><div class="bot-cell">${renderBotImage(row)}<span>${escapeHtml(row.name)}</span></div></td>
         <td>${escapeHtml(categoryLabel(row.category))}</td>
         <td>${formatDate(row.lastTime)}</td>
-        <td>${formatDate(row.lastInteraction)}</td>
         <td>${row.userMessages}</td>
-        <td>${renderDormantSize(row)}</td>
       </tr>
     `;
   }
@@ -532,23 +533,9 @@
         <dl>
           <dt>분류</dt><dd>${escapeHtml(categoryLabel(row.category))}</dd>
           <dt>마지막 대화</dt><dd>${formatDate(row.lastTime)}</dd>
-          <dt>열람/갱신 추정</dt><dd>${formatDate(row.lastInteraction)}</dd>
           <dt>사용자 메시지</dt><dd>${row.userMessages}</dd>
-          <dt>용량</dt><dd>${renderDormantSize(row)}</dd>
         </dl>
       </article>
-    `;
-  }
-
-  function renderDormantSize(row) {
-    const label = row.sizeMode === "exact" ? "정밀" : "빠른 추정";
-    const pending = row.pendingAssetCount ? ` · 미확인 에셋 ${row.pendingAssetCount}개` : "";
-    return `
-      <div class="size-cell">
-        <strong>${formatBytes(row.size)}</strong>
-        <span>${label}${pending}</span>
-        ${row.sizeMode === "exact" ? "" : `<button data-action="measure-dormant" data-index="${row.index}">정밀 계산</button>`}
-      </div>
     `;
   }
 
@@ -597,10 +584,17 @@
     });
 
     document.querySelectorAll("[data-toggle-storage]").forEach((node) => {
-      node.onclick = () => {
+      node.onclick = (event) => {
+        if (event.target?.closest?.("[data-storage-owner]")) return;
         const key = node.dataset.toggleStorage;
         toggleSet(state.selectedStorage, key, !state.selectedStorage.has(key));
         refreshPanel();
+      };
+    });
+    document.querySelectorAll("[data-storage-owner]").forEach((input) => {
+      input.onclick = (event) => event.stopPropagation();
+      input.onchange = async () => {
+        await setStorageOwner(input.dataset.storageOwner, input.value);
       };
     });
     document.querySelectorAll("[data-toggle-greeting-item]").forEach((node) => {
@@ -657,7 +651,6 @@
       if (action === "clear-all-greetings") setAllGreetings(false);
       if (action === "apply-greetings") await applyGreetingCleanup();
       if (action === "scan-dormant") await scanDormant();
-      if (action === "measure-dormant") await measureDormantSize(Number(source.dataset.index));
       if (action === "trash-dormant") await trashDormant();
     } catch (error) {
       state.busy = false;
@@ -712,13 +705,51 @@
     const db = await getDb(["pluginCustomStorage", "plugins"]);
     if (!db) return;
     const storage = db.pluginCustomStorage || {};
+    state.storageOwners = await loadStorageOwners();
+    state.storageOwnerOptions = Array.from(new Set((db.plugins || [])
+      .map((plugin) => plugin.displayName || plugin.name)
+      .filter(Boolean)
+      .concat(Object.values(state.storageOwners).filter(Boolean))))
+      .sort((a, b) => normalizeForSort(a).localeCompare(normalizeForSort(b), "ko-KR"));
     state.storageRows = Object.keys(storage).map((key) => ({
       key,
-      owner: guessStorageOwner(key, db.plugins || []),
+      owner: state.storageOwners[key] || guessStorageOwner(key, db.plugins || []),
       size: estimateSize(storage[key]),
     }));
     state.selectedStorage = new Set();
     clearBusy(`스토리지 ${state.storageRows.length}개를 찾았습니다.`);
+  }
+
+  async function loadStorageOwners() {
+    try {
+      const saved = await R.pluginStorage.getItem(STORAGE_OWNER_KEY);
+      const parsed = typeof saved === "string" ? JSON.parse(saved) : saved;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (error) {
+      console.warn("[Risu Sidekick] Could not load storage owner overrides.", error);
+      return {};
+    }
+  }
+
+  async function saveStorageOwners() {
+    await R.pluginStorage.setItem(STORAGE_OWNER_KEY, JSON.stringify(state.storageOwners));
+  }
+
+  async function setStorageOwner(key, owner) {
+    if (!key) return;
+    const value = String(owner || "").trim();
+    if (value) state.storageOwners[key] = value;
+    else delete state.storageOwners[key];
+    state.storageRows = state.storageRows.map((row) => (
+      row.key === key ? { ...row, owner: value || "알 수 없음" } : row
+    ));
+    if (value && !state.storageOwnerOptions.includes(value)) {
+      state.storageOwnerOptions = [...state.storageOwnerOptions, value]
+        .sort((a, b) => normalizeForSort(a).localeCompare(normalizeForSort(b), "ko-KR"));
+    }
+    await saveStorageOwners();
+    setStatus(value ? `${key} 소유자를 ${value}(으)로 저장했습니다.` : `${key} 소유자 지정을 지웠습니다.`);
+    refreshPanel();
   }
 
   async function deleteSelectedStorage(deleteAll) {
@@ -888,12 +919,10 @@
         : item?.char?.alternateGreetings?.[row.greetingIndex];
       return Boolean(String(text || "").match(SFX_REGEX));
     });
+    await scanGreetings("all", { preserveSelection: true });
     if (stillDirty.length > 0) {
       setStatus("일부 항목이 Risu 캐릭터 저장 API에 반영되지 않았습니다. 현재 Risu 버전에서 영속 저장이 제한될 수 있습니다.");
-      return;
     }
-
-    await scanGreetings("all", { preserveSelection: true });
   }
 
   function cleanGreetingText(text) {
@@ -943,154 +972,8 @@
       imageSrc: await getCharacterImageSource(char),
       category,
       lastTime,
-      lastInteraction: Number.isFinite(char.lastInteraction) ? char.lastInteraction : 0,
       userMessages,
-      ...estimateCharacterQuickSize(char),
     };
-  }
-
-  function estimateCharacterQuickSize(char) {
-    const assetRefs = collectCharacterAssetRefs(char);
-    const inlineBytes = assetRefs.reduce((sum, ref) => sum + estimateInlineAssetSize(ref), 0);
-    const pendingAssetCount = assetRefs.filter((ref) => estimateInlineAssetSize(ref) === 0).length;
-    return {
-      size: estimateSize(char) + inlineBytes,
-      sizeMode: "quick",
-      assetCount: assetRefs.length,
-      pendingAssetCount,
-    };
-  }
-
-  async function estimateCharacterTotalSize(char, onProgress) {
-    const assetRefs = collectCharacterAssetRefs(char);
-    const assetBytes = await estimateAssetRefsSize(assetRefs, onProgress);
-    return {
-      size: estimateSize(char) + assetBytes,
-      assetCount: assetRefs.length,
-    };
-  }
-
-  function collectCharacterAssetRefs(char) {
-    const refs = new Set();
-    addAssetRef(refs, char?.image);
-    if (Array.isArray(char?.ccAssets)) {
-      char.ccAssets.forEach((asset) => addAssetRef(refs, asset?.uri || asset?.name || asset?.path));
-    }
-    if (Array.isArray(char?.additionalAssets)) {
-      char.additionalAssets.forEach((asset) => addAssetRef(refs, Array.isArray(asset) ? asset[1] : asset?.uri || asset?.path));
-    }
-    if (Array.isArray(char?.emotionImages)) {
-      char.emotionImages.forEach((asset) => addAssetRef(refs, Array.isArray(asset) ? asset[1] : asset?.uri || asset?.path));
-    }
-    if (char?.vits?.files && typeof char.vits.files === "object") {
-      Object.values(char.vits.files).forEach((value) => addAssetRef(refs, value));
-    }
-    if (char?.gptSoVitsConfig?.ref_audio_data?.assetId) {
-      addAssetRef(refs, char.gptSoVitsConfig.ref_audio_data.assetId);
-    }
-    return Array.from(refs);
-  }
-
-  function addAssetRef(refs, value) {
-    const ref = String(value || "").trim();
-    if (!ref) return;
-    if (/^https?:|^blob:|^tauri:/i.test(ref)) return;
-    refs.add(ref);
-  }
-
-  async function estimateAssetRefsSize(refs, onProgress) {
-    let total = 0;
-    for (let index = 0; index < refs.length; index += 1) {
-      const ref = refs[index];
-      if (onProgress) onProgress(index, refs.length, ref);
-      const bytes = await readAssetSize(ref);
-      total += bytes;
-      if (index % 12 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    return total;
-  }
-
-  async function readAssetSize(ref) {
-    if (assetSizeCache.has(ref)) return assetSizeCache.get(ref);
-    const inlineSize = estimateInlineAssetSize(ref);
-    if (inlineSize > 0) {
-      assetSizeCache.set(ref, inlineSize);
-      return inlineSize;
-    }
-    const normalizedRef = ref.startsWith("__asset:") ? ref.slice("__asset:".length) : ref;
-    const attempts = Array.from(new Set([
-      normalizedRef,
-      normalizedRef.replace(/^assets[\\/]/, ""),
-      normalizedRef.split(/[\\/]/).pop(),
-    ].filter(Boolean)));
-
-    for (const path of attempts) {
-      try {
-        const data = await R.readImage(path);
-        const size = getBinaryLikeSize(data);
-        if (size > 0) {
-          assetSizeCache.set(ref, size);
-          return size;
-        }
-      } catch {
-        // Some assets may be missing, remote-only, or not readable through readImage.
-      }
-    }
-    assetSizeCache.set(ref, 0);
-    return 0;
-  }
-
-  function estimateInlineAssetSize(ref) {
-    const text = String(ref || "");
-    if (!text) return 0;
-    const comma = text.indexOf(",");
-    if (text.startsWith("data:") && comma >= 0) {
-      return Math.floor((text.length - comma - 1) * 3 / 4);
-    }
-    if (/^[A-Za-z0-9+/=\r\n]+$/.test(text) && text.length > 256) {
-      return Math.floor(text.replace(/\s/g, "").length * 3 / 4);
-    }
-    return 0;
-  }
-
-  async function measureDormantSize(index) {
-    const row = state.dormantRows.find((item) => item.index === index);
-    if (!row) return;
-    const db = await getDb(["characters"]);
-    if (!db) return;
-    const char = db.characters?.[index];
-    if (!char) {
-      setStatus("봇 데이터를 찾지 못했습니다. 다시 스캔해 주세요.");
-      return;
-    }
-    await showPermissionOverlay(`${row.name} 정밀 용량을 계산하는 중...`, 0);
-    const result = await estimateCharacterTotalSize(char, (current, total) => {
-      setBusyProgress(`${row.name} 에셋 용량을 계산하는 중...`, current, total);
-    });
-    row.size = result.size;
-    row.sizeMode = "exact";
-    row.assetCount = result.assetCount;
-    row.pendingAssetCount = 0;
-    setBusyProgress(`${row.name} 에셋 용량을 계산하는 중...`, result.assetCount, result.assetCount);
-    clearBusy(`${row.name} 정밀 용량 계산 완료: ${formatBytes(row.size)}`);
-  }
-
-  function getBinaryLikeSize(data) {
-    if (!data) return 0;
-    if (typeof data === "string") {
-      const comma = data.indexOf(",");
-      if (data.startsWith("data:") && comma >= 0) {
-        return Math.floor((data.length - comma - 1) * 3 / 4);
-      }
-      return new TextEncoder().encode(data).length;
-    }
-    if (data instanceof ArrayBuffer) return data.byteLength;
-    if (ArrayBuffer.isView(data)) return data.byteLength;
-    if (Array.isArray(data)) return data.length;
-    if (data?.data && Array.isArray(data.data)) return data.data.length;
-    if (Number.isFinite(data?.byteLength)) return data.byteLength;
-    if (Number.isFinite(data?.size)) return data.size;
-    return 0;
   }
 
   async function getCharacterImageSource(char) {
@@ -1361,6 +1244,19 @@
         width: max-content;
         padding: 6px 9px;
         font-size: 12px;
+      }
+      .owner-input {
+        width: min(260px, 100%);
+        border: 1px solid #3a4350;
+        border-radius: 7px;
+        background: #11151d;
+        color: #f5f2ea;
+        padding: 8px 9px;
+        font: inherit;
+      }
+      .owner-input:focus {
+        outline: 2px solid rgba(166, 117, 255, .45);
+        border-color: #a675ff;
       }
       code { color: #d7c2ff; word-break: break-all; }
       .sort-head {
