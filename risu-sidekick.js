@@ -1,9 +1,9 @@
 //@name risu_sidekick
-//@display-name 리스 사이드킥 v0.2.7
+//@display-name 리스 사이드킥 v0.2.8
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.2.7
-//@changes 우상단 플로팅 버튼 제거, 미지원 사이드패널 리사이저 제거
+//@version 0.2.8
+//@changes 첫 메시지 청소 저장 경로를 캐릭터별 저장 API로 변경
 //@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/refs/heads/main/risu-sidekick.latest.js
 
 (async () => {
@@ -13,7 +13,7 @@
     return;
   }
 
-  const PLUGIN_VERSION = "0.2.7";
+  const PLUGIN_VERSION = "0.2.8";
   const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
   const MS_DAY = 24 * 60 * 60 * 1000;
@@ -757,9 +757,9 @@
       const group = await collectGreetingGroup(char, index);
       if (group) state.greetingGroups.push(group);
     } else {
-      const db = await getDb(["characters"]);
-      if (!db) return;
-      const groups = await Promise.all((db.characters || []).map((char, index) => collectGreetingGroup(char, index)));
+      const characterList = await getCharacterListForCleanup();
+      if (!characterList) return;
+      const groups = await Promise.all(characterList.map(({ char, index }) => collectGreetingGroup(char, index)));
       state.greetingGroups = groups.filter(Boolean);
     }
 
@@ -795,6 +795,22 @@
     return null;
   }
 
+  async function getCharacterListForCleanup() {
+    if (typeof R.getCharacterFromIndex === "function") {
+      const list = [];
+      for (let index = 0; index < 10000; index += 1) {
+        const char = await R.getCharacterFromIndex(index);
+        if (!char) break;
+        list.push({ char, index });
+      }
+      return list;
+    }
+
+    const db = await getDb(["characters"]);
+    if (!db) return null;
+    return (db.characters || []).map((char, index) => ({ char, index }));
+  }
+
   function collectGreetingItem(items, charIndex, greetingIndex, fieldLabel, text) {
     const matches = Array.from(new Set(String(text).match(SFX_REGEX) || []));
     if (matches.length === 0) return;
@@ -815,19 +831,30 @@
     }
     if (!confirm(`${rows.length}개 첫 메시지 항목에서 §...§ 조각을 삭제할까요?`)) return;
 
-    const db = await getDb(["characters"]);
-    if (!db) return;
-    const before = rows.map((row) => ({
-      charIndex: row.charIndex,
-      greetingIndex: row.greetingIndex,
-      value: row.greetingIndex === -1
-        ? db.characters?.[row.charIndex]?.firstMessage
-        : db.characters?.[row.charIndex]?.alternateGreetings?.[row.greetingIndex],
-    }));
+    const byChar = new Map();
+    for (const row of rows) {
+      if (!byChar.has(row.charIndex)) {
+        const char = typeof R.getCharacterFromIndex === "function"
+          ? await R.getCharacterFromIndex(row.charIndex)
+          : (await getDb(["characters"]))?.characters?.[row.charIndex];
+        if (char) byChar.set(row.charIndex, char);
+      }
+    }
+
+    const before = rows.map((row) => {
+      const char = byChar.get(row.charIndex);
+      return {
+        charIndex: row.charIndex,
+        greetingIndex: row.greetingIndex,
+        value: row.greetingIndex === -1
+          ? char?.firstMessage
+          : char?.alternateGreetings?.[row.greetingIndex],
+      };
+    });
     await saveSnapshot("greeting-cleanup", before);
 
     rows.forEach((row) => {
-      const char = db.characters?.[row.charIndex];
+      const char = byChar.get(row.charIndex);
       if (!char) return;
       if (row.greetingIndex === -1) {
         char.firstMessage = cleanGreetingText(char.firstMessage || "");
@@ -835,7 +862,37 @@
         char.alternateGreetings[row.greetingIndex] = cleanGreetingText(char.alternateGreetings[row.greetingIndex] || "");
       }
     });
-    await R.setDatabase(db);
+
+    if (typeof R.setCharacterToIndex === "function") {
+      for (const [index, char] of byChar.entries()) {
+        await R.setCharacterToIndex(index, char);
+      }
+      if (typeof R.setDatabase === "function") {
+        const db = await R.getDatabase(["characters"]);
+        if (db) await R.setDatabase(db);
+      }
+    } else {
+      const db = await getDb(["characters"]);
+      if (!db) return;
+      for (const [index, char] of byChar.entries()) {
+        if (db.characters?.[index]) db.characters[index] = char;
+      }
+      await R.setDatabase(db);
+    }
+
+    const verifyList = await getCharacterListForCleanup();
+    const stillDirty = rows.filter((row) => {
+      const item = verifyList?.find((entry) => entry.index === row.charIndex);
+      const text = row.greetingIndex === -1
+        ? item?.char?.firstMessage
+        : item?.char?.alternateGreetings?.[row.greetingIndex];
+      return Boolean(String(text || "").match(SFX_REGEX));
+    });
+    if (stillDirty.length > 0) {
+      setStatus("일부 항목이 Risu 캐릭터 저장 API에 반영되지 않았습니다. 현재 Risu 버전에서 영속 저장이 제한될 수 있습니다.");
+      return;
+    }
+
     await scanGreetings("all", { preserveSelection: true });
   }
 
