@@ -1,9 +1,9 @@
 //@name risu_sidekick
-//@display-name 리스 사이드킥 v0.2.9
+//@display-name 리스 사이드킥 v0.2.10
 //@author IBNT + Codex
 //@api 3.0
-//@version 0.2.9
-//@changes 저장소 소유자 직접 입력, 잠든 봇 표 단순화, 첫 메시지 청소 재스캔 복원
+//@version 0.2.10
+//@changes 목록 내부 스크롤로 상단 작업 버튼 고정
 //@update-url https://raw.githubusercontent.com/Lukaku-ai/risu-sidekick/refs/heads/main/risu-sidekick.latest.js
 
 (async () => {
@@ -13,7 +13,7 @@
     return;
   }
 
-  const PLUGIN_VERSION = "0.2.9";
+  const PLUGIN_VERSION = "0.2.10";
   const STORAGE_OWNER_KEY = "risu_sidekick_storage_owner_overrides";
   const SNAPSHOT_PREFIX = "risu_sidekick_snapshot_";
   const SFX_REGEX = /§[^§\r\n]{1,80}§/g;
@@ -360,30 +360,36 @@
     const rows = sortedStorageRows();
     const total = rows.reduce((sum, row) => sum + row.size, 0);
     return `
-      <div class="toolbar">
-        <button data-action="scan-storage">스캔</button>
-        <button data-action="delete-storage" class="danger">선택 삭제</button>
-        <button data-action="delete-all-storage" class="danger outline">전체 삭제</button>
-        <span>${rows.length}개, ${formatBytes(total)}</span>
+      <div class="tab-layout">
+        <div class="tab-actions">
+          <div class="toolbar">
+            <button data-action="scan-storage">스캔</button>
+            <button data-action="delete-storage" class="danger">선택 삭제</button>
+            <button data-action="delete-all-storage" class="danger outline">전체 삭제</button>
+            <span>${rows.length}개, ${formatBytes(total)}</span>
+          </div>
+          <p class="hint">소유자는 직접 고칠 수 있습니다. 입력 후보에는 설치된 플러그인 목록을 띄웁니다.</p>
+          <datalist id="storage-owner-options">
+            ${state.storageOwnerOptions.map((owner) => `<option value="${escapeHtml(owner)}"></option>`).join("")}
+          </datalist>
+        </div>
+        <div class="scroll-zone">
+          <div class="desktop-table">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>${renderSortHead("저장소 키", "key", "storage")}</th>
+                  <th>${renderSortHead("소유자", "owner", "storage")}</th>
+                  <th>${renderSortHead("크기", "size", "storage")}</th>
+                </tr>
+              </thead>
+              <tbody>${rows.map(renderStorageRow).join("") || `<tr><td colspan="4" class="empty">아직 스캔하지 않았습니다.</td></tr>`}</tbody>
+            </table>
+          </div>
+          <div class="mobile-list">${rows.map(renderStorageMobile).join("") || `<div class="empty-card">아직 스캔하지 않았습니다.</div>`}</div>
+        </div>
       </div>
-      <p class="hint">소유자는 직접 고칠 수 있습니다. 입력 후보에는 설치된 플러그인 목록을 띄웁니다.</p>
-      <datalist id="storage-owner-options">
-        ${state.storageOwnerOptions.map((owner) => `<option value="${escapeHtml(owner)}"></option>`).join("")}
-      </datalist>
-      <div class="desktop-table">
-        <table>
-          <thead>
-            <tr>
-              <th></th>
-              <th>${renderSortHead("저장소 키", "key", "storage")}</th>
-              <th>${renderSortHead("소유자", "owner", "storage")}</th>
-              <th>${renderSortHead("크기", "size", "storage")}</th>
-            </tr>
-          </thead>
-          <tbody>${rows.map(renderStorageRow).join("") || `<tr><td colspan="4" class="empty">아직 스캔하지 않았습니다.</td></tr>`}</tbody>
-        </table>
-      </div>
-      <div class="mobile-list">${rows.map(renderStorageMobile).join("") || `<div class="empty-card">아직 스캔하지 않았습니다.</div>`}</div>
     `;
   }
 
@@ -416,17 +422,23 @@
 
   function renderGreetings() {
     return `
-      <div class="toolbar">
-        <button data-action="scan-current-greetings">현재 봇 스캔</button>
-        <button data-action="scan-all-greetings">전체 봇 스캔</button>
-        <button data-action="select-all-greetings">전체 선택</button>
-        <button data-action="clear-all-greetings">전체 해제</button>
-        <button data-action="apply-greetings" class="primary">선택 삭제</button>
-        <span>${selectedGreetingCount()} / ${totalGreetingCount()}개 선택</span>
-      </div>
-      <p class="hint">봇 이름을 누르면 첫 메시지와 추가 첫 메시지 후보가 펼쳐집니다. 기본 패턴은 짧은 <code>§...§</code> 조각만 제거합니다.</p>
-      <div class="accordion">
-        ${state.greetingGroups.map(renderGreetingGroup).join("") || `<div class="empty-card">스캔 결과가 없습니다.</div>`}
+      <div class="tab-layout">
+        <div class="tab-actions">
+          <div class="toolbar">
+            <button data-action="scan-current-greetings">현재 봇 스캔</button>
+            <button data-action="scan-all-greetings">전체 봇 스캔</button>
+            <button data-action="select-all-greetings">전체 선택</button>
+            <button data-action="clear-all-greetings">전체 해제</button>
+            <button data-action="apply-greetings" class="primary">선택 삭제</button>
+            <span>${selectedGreetingCount()} / ${totalGreetingCount()}개 선택</span>
+          </div>
+          <p class="hint">봇 이름을 누르면 첫 메시지와 추가 첫 메시지 후보가 펼쳐집니다. 기본 패턴은 짧은 <code>§...§</code> 조각만 제거합니다.</p>
+        </div>
+        <div class="scroll-zone">
+          <div class="accordion">
+            ${state.greetingGroups.map(renderGreetingGroup).join("") || `<div class="empty-card">스캔 결과가 없습니다.</div>`}
+          </div>
+        </div>
       </div>
     `;
   }
@@ -480,35 +492,41 @@
   function renderDormant() {
     const rows = sortedDormantRows();
     return `
-      <div class="toolbar">
-        <button data-action="scan-dormant">스캔</button>
-        <select id="dormant-filter">
-          ${filterOption("all", "전체")}
-          ${filterOption("no_chat", "대화 없음")}
-          ${filterOption("old_3m", "3개월 이상")}
-          ${filterOption("old_6m", "6개월 이상")}
-          ${filterOption("old_1y", "1년 이상")}
-          ${filterOption("unknown", "날짜 불명")}
-        </select>
-        <button data-action="trash-dormant" class="danger">선택 휴지통</button>
-        <span>${rows.length}개 표시</span>
+      <div class="tab-layout">
+        <div class="tab-actions">
+          <div class="toolbar">
+            <button data-action="scan-dormant">스캔</button>
+            <select id="dormant-filter">
+              ${filterOption("all", "전체")}
+              ${filterOption("no_chat", "대화 없음")}
+              ${filterOption("old_3m", "3개월 이상")}
+              ${filterOption("old_6m", "6개월 이상")}
+              ${filterOption("old_1y", "1년 이상")}
+              ${filterOption("unknown", "날짜 불명")}
+            </select>
+            <button data-action="trash-dormant" class="danger">선택 휴지통</button>
+            <span>${rows.length}개 표시</span>
+          </div>
+          <p class="hint">RisuAI v3 플러그인 API에는 특정 봇이나 마지막 채팅으로 화면을 전환하는 공개 함수가 없어 바로 가기 버튼은 제공하지 않습니다.</p>
+        </div>
+        <div class="scroll-zone">
+          <div class="desktop-table">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>${renderSortHead("봇", "name", "dormant")}</th>
+                  <th>${renderSortHead("분류", "category", "dormant")}</th>
+                  <th>${renderSortHead("마지막 대화", "lastTime", "dormant")}</th>
+                  <th>${renderSortHead("사용자 메시지", "userMessages", "dormant")}</th>
+                </tr>
+              </thead>
+              <tbody>${rows.map(renderDormantRow).join("") || `<tr><td colspan="5" class="empty">스캔 결과가 없습니다.</td></tr>`}</tbody>
+            </table>
+          </div>
+          <div class="mobile-list">${rows.map(renderDormantMobile).join("") || `<div class="empty-card">스캔 결과가 없습니다.</div>`}</div>
+        </div>
       </div>
-      <p class="hint">RisuAI v3 플러그인 API에는 특정 봇이나 마지막 채팅으로 화면을 전환하는 공개 함수가 없어 바로 가기 버튼은 제공하지 않습니다.</p>
-      <div class="desktop-table">
-        <table>
-          <thead>
-            <tr>
-              <th></th>
-              <th>${renderSortHead("봇", "name", "dormant")}</th>
-              <th>${renderSortHead("분류", "category", "dormant")}</th>
-              <th>${renderSortHead("마지막 대화", "lastTime", "dormant")}</th>
-              <th>${renderSortHead("사용자 메시지", "userMessages", "dormant")}</th>
-            </tr>
-          </thead>
-          <tbody>${rows.map(renderDormantRow).join("") || `<tr><td colspan="5" class="empty">스캔 결과가 없습니다.</td></tr>`}</tbody>
-        </table>
-      </div>
-      <div class="mobile-list">${rows.map(renderDormantMobile).join("") || `<div class="empty-card">스캔 결과가 없습니다.</div>`}</div>
     `;
   }
 
@@ -1161,7 +1179,7 @@
       }
       .mobile-back { display: none; }
       .eyebrow { color: #c4a6ff; font-weight: 700; margin-bottom: 4px; }
-      .panel { flex: 1; padding: 22px 32px; overflow: auto; }
+      .panel { flex: 1; min-height: 0; padding: 22px 32px; overflow: hidden; }
       button, select {
         border: 1px solid #3b4350;
         background: #232a36;
@@ -1179,6 +1197,21 @@
       .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
       .toolbar span { color: #d5cec1; }
       .hint { margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
+      .tab-layout {
+        height: 100%;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .tab-actions {
+        flex: 0 0 auto;
+      }
+      .scroll-zone {
+        flex: 1 1 auto;
+        min-height: 220px;
+        overflow: auto;
+        padding-right: 6px;
+      }
       .tool-list {
         display: grid;
         gap: 10px;
@@ -1441,7 +1474,7 @@
         100% { transform: translateX(260%); }
       }
       @media (max-width: 820px) {
-        .rm-shell { display: block; overflow-x: hidden; }
+        .rm-shell { display: block; min-height: 100vh; overflow-x: hidden; }
         .rm-sidebar { border-right: 0; border-bottom: 1px solid #2d3440; padding: 14px; }
         .brand { align-items: center; }
         h1 { font-size: 20px; }
@@ -1456,6 +1489,8 @@
           inset: 0;
           z-index: 20;
           background: #101216;
+          display: flex;
+          flex-direction: column;
           transform: translateX(100%);
           transition: transform .22s ease;
         }
@@ -1467,7 +1502,11 @@
           background: transparent;
         }
         .feature-head { padding: 20px 16px 14px; }
-        .panel { padding: 16px; }
+        .panel { flex: 1; min-height: 0; padding: 16px; overflow: hidden; }
+        .scroll-zone {
+          min-height: 180px;
+          padding-right: 2px;
+        }
         .toolbar { align-items: stretch; }
         .toolbar button, .toolbar select { flex: 1 1 auto; }
         .fold-card header {
